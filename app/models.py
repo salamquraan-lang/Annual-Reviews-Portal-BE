@@ -1,7 +1,7 @@
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import CHAR, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import CHAR, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,7 +29,7 @@ class AuthTokenType(enum.StrEnum):
 
 class Department(Base):
     __tablename__ = "departments"
-    __table_args__ = (UniqueConstraint("parent_id", "name", name="departments_parent_id_name_key"),)
+    __table_args__ = (Index("departments_parent_id_idx", "parent_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
