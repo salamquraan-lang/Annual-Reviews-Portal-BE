@@ -14,3 +14,16 @@ python -m app
 ```
 
 The API runs on http://localhost:4000.
+
+## API documentation
+
+https://n8jspssafq.apidog.io/
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests don't need MySQL.
