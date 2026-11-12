@@ -128,9 +128,6 @@ def list_departments(
     page: int = 1,
     page_size: int = 20,
 ) -> DepartmentPage:
-    if parent_id is not None and top_level:
-        raise bad_request("VALIDATION_ERROR", "Use either parentId or topLevel, not both.")
-
     conditions = []
     if is_active is not None:
         conditions.append(Department.is_active == is_active)
