@@ -7,6 +7,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    StrictInt,
     field_validator,
     model_validator,
 )
@@ -32,6 +33,8 @@ def _require_date_text(value: object) -> object:
 
 CycleName = Annotated[str, AfterValidator(_check_cycle_name)]
 CycleYear = Annotated[int, Field(ge=2000, le=2100)]
+# Request bodies must send a real number. Query strings are text, so they use CycleYear.
+CycleBodyYear = Annotated[StrictInt, Field(ge=2000, le=2100)]
 IsoDate = Annotated[date, BeforeValidator(_require_date_text)]
 
 
@@ -45,7 +48,7 @@ class CycleCreate(BaseModel):
 
     name: CycleName
     type: CycleType
-    year: CycleYear
+    year: CycleBodyYear
     start_date: IsoDate = Field(alias="startDate")
     end_date: IsoDate = Field(alias="endDate")
 
@@ -63,7 +66,7 @@ class CycleUpdate(BaseModel):
 
     name: CycleName | None = None
     type: CycleType | None = None
-    year: CycleYear | None = None
+    year: CycleBodyYear | None = None
     start_date: IsoDate | None = Field(default=None, alias="startDate")
     end_date: IsoDate | None = Field(default=None, alias="endDate")
 

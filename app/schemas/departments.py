@@ -8,9 +8,11 @@ from pydantic import (
     Field,
     PlainSerializer,
     StrictBool,
+    StrictInt,
     field_validator,
     model_validator,
 )
+
 
 def _as_utc_iso(value: datetime) -> str:
     # The database stores naive UTC times. Add the Z so clients don't read them as local time.
@@ -99,7 +101,7 @@ class DepartmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: DepartmentName
-    parent_id: int | None = Field(default=None, alias="parentId", ge=1)
+    parent_id: StrictInt | None = Field(default=None, alias="parentId", ge=1)
 
 
 class DepartmentUpdate(BaseModel):
@@ -129,13 +131,13 @@ class DepartmentChangeParent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Required, but it may be null. Null means top level.
-    parent_id: int | None = Field(alias="parentId", ge=1)
+    parent_id: StrictInt | None = Field(alias="parentId", ge=1)
 
 
 class DepartmentMoveUsers(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_department_id: int = Field(alias="targetDepartmentId", ge=1)
+    target_department_id: StrictInt = Field(alias="targetDepartmentId", ge=1)
 
 
 class MoveUsersResponse(BaseModel):
