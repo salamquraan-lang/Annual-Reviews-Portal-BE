@@ -1,7 +1,14 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+)
 
 
 def _as_utc_iso(value: datetime) -> str:
@@ -14,6 +21,18 @@ def _as_utc_iso(value: datetime) -> str:
 
 
 UtcDateTime = Annotated[datetime, PlainSerializer(_as_utc_iso, return_type=str)]
+
+
+def _check_department_name(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Name is required.")
+    if len(value) > 120:
+        raise ValueError("Name must be at most 120 characters.")
+    return value
+
+
+DepartmentName = Annotated[str, AfterValidator(_check_department_name)]
 
 
 class DepartmentChildOut(BaseModel):
@@ -73,3 +92,35 @@ class DepartmentListQuery(BaseModel):
         if self.parent_id is not None and self.top_level:
             raise ValueError("Use either parentId or topLevel, not both.")
         return self
+
+
+class DepartmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: DepartmentName
+    parent_id: int | None = Field(default=None, alias="parentId", ge=1)
+
+
+class DepartmentRename(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: DepartmentName
+
+
+class DepartmentMove(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Required, but it may be null. Null means top level.
+    parent_id: int | None = Field(alias="parentId", ge=1)
+
+
+class DepartmentMoveUsers(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_department_id: int = Field(alias="targetDepartmentId", ge=1)
+
+
+class MoveUsersResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    moved_count: int = Field(serialization_alias="movedCount")
