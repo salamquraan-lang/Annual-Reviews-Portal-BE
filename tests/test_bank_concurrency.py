@@ -209,10 +209,12 @@ def test_a_question_added_to_a_draft_while_a_cycle_opens_is_not_archived(
     bank, auth, admin, make_cycle, db, monkeypatch
 ):
     """QB-14 runs while a cycle opens. A question that a draft starts using at that moment stays active."""
+    # Until cycles.py calls archive_unused_questions itself, its stub is replaced here.
+    # The stand-in takes any extra arguments, so it still fits once the stub also takes actor_id.
     monkeypatch.setattr(
-        cycle_service, "_archive_unused_questions", lambda session, cycle: bank_service.archive_unused_questions(
-            session, cycle, admin.id
-        )
+        cycle_service,
+        "_archive_unused_questions",
+        lambda session, cycle, *_: bank_service.archive_unused_questions(session, cycle, admin.id),
     )
     criterion = bank.criterion()
     old, new = bank.question(criterion, "Old."), bank.question(criterion, "New.")
