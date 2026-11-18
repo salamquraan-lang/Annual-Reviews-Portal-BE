@@ -63,7 +63,6 @@ AUTH_LIMITED_PATHS = (
     "/api/auth/resend-verification",
     "/api/auth/login",
     "/api/auth/refresh",
-    "/api/auth/change-password",
     "/api/auth/forgot-password",
     "/api/auth/reset-password",
 )

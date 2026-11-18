@@ -20,19 +20,22 @@ def get_mailer(request: Request) -> Mailer:
     return request.app.state.mailer
 
 
-def require_auth(allow_pending_password_change: bool = False) -> Callable[..., User]:
+Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+
+
+def optional_auth(db: DbSession, credentials: Credentials) -> User | None:
     # The user is read from the database on every request, so deactivation
     # and role changes apply immediately instead of when the token expires.
-    def dependency(
-        db: DbSession,
-        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-    ) -> User:
-        payload = decode_access_token(credentials.credentials) if credentials else None
-        if payload is None:
-            raise unauthorized()
+    payload = decode_access_token(credentials.credentials) if credentials else None
+    if payload is None:
+        return None
+    user = db.get(User, int(payload["sub"]))
+    return user if user is not None and user.is_active else None
 
-        user = db.get(User, int(payload["sub"]))
-        if user is None or not user.is_active:
+
+def require_auth(allow_pending_password_change: bool = False) -> Callable[..., User]:
+    def dependency(user: Annotated[User | None, Depends(optional_auth)]) -> User:
+        if user is None:
             raise unauthorized()
         if user.must_change_password and not allow_pending_password_change:
             raise forbidden("PASSWORD_CHANGE_REQUIRED", "You must change your password first.")
@@ -52,3 +55,4 @@ def require_roles(*roles: Role) -> Callable[..., User]:
 
 CurrentUser = Annotated[User, Depends(require_auth())]
 CurrentUserAllowPending = Annotated[User, Depends(require_auth(allow_pending_password_change=True))]
+OptionalUser = Annotated[User | None, Depends(optional_auth)]
