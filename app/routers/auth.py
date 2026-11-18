@@ -1,15 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.dependencies import CurrentUserAllowPending, DbSession, get_mailer
-from app.errors import AppError, error_response
+from app.dependencies import CurrentUserAllowPending, DbSession, OptionalUser, get_mailer
+from app.errors import AppError, error_response, unauthorized
 from app.mailer import Mailer
 from app.rate_limit import limiter, too_many_requests
 from app.schemas import (
-    ChangePasswordRequest,
     EmailRequest,
     LoginRequest,
     MessageResponse,
@@ -119,30 +118,32 @@ def logout_all(response: Response, user: CurrentUserAllowPending, db: DbSession)
     _clear_refresh_cookie(response)
 
 
-@router.post("/change-password")
-def change_password(
-    body: ChangePasswordRequest,
-    user: CurrentUserAllowPending,
-    db: DbSession,
-    refresh_token: RefreshCookie = None,
-) -> MessageResponse:
-    auth.change_password(db, user, body.current_password, body.new_password, refresh_token)
-    return MessageResponse(message="Your password has been changed. Your other devices were logged out.")
-
-
 @router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
 def forgot_password(body: EmailRequest, db: DbSession, mailer: MailerDep) -> MessageResponse:
     auth.forgot_password(db, mailer, body.email)
     return MessageResponse(message="If this email is registered, we have sent a link to reset the password.")
 
 
-@router.get("/reset-password/validate")
-def validate_reset_token(db: DbSession, token: Annotated[str, Query()] = "") -> ValidResponse:
-    return ValidResponse(valid=bool(token) and auth.is_reset_token_valid(db, token))
+@router.post("/reset-password/validate")
+def validate_reset_token(body: TokenRequest, db: DbSession) -> ValidResponse:
+    return ValidResponse(valid=auth.is_reset_token_valid(db, body.token))
 
 
-@router.post("/reset-password")
-def reset_password(body: ResetPasswordRequest, response: Response, db: DbSession) -> MessageResponse:
-    auth.reset_password(db, body.token, body.new_password)
-    _clear_refresh_cookie(response)
-    return MessageResponse(message="Your password has been reset. You can log in with the new password.")
+@router.patch("/reset-password")
+def reset_password(
+    body: ResetPasswordRequest,
+    response: Response,
+    db: DbSession,
+    user: OptionalUser,
+    refresh_token: RefreshCookie = None,
+) -> MessageResponse:
+    if body.token is not None:
+        auth.reset_password(db, body.token, body.new_password)
+        _clear_refresh_cookie(response)
+        return MessageResponse(message="Your password has been reset. You can log in with the new password.")
+
+    # Without a link, the caller must be logged in and know the current password.
+    if user is None:
+        raise unauthorized()
+    auth.change_password(db, user, body.current_password, body.new_password, refresh_token)
+    return MessageResponse(message="Your password has been changed. Your other devices were logged out.")

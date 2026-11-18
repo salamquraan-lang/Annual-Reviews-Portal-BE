@@ -11,6 +11,7 @@ from pydantic import (
     StringConstraints,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 
 from app.models import Role
@@ -90,13 +91,18 @@ class TokenRequest(BaseModel):
     token: Token
 
 
-class ChangePasswordRequest(BaseModel):
-    current_password: Annotated[
-        str,
-        StringConstraints(max_length=200),
-        AfterValidator(_required("Current password is required.")),
-        Field(alias="currentPassword"),
-    ]
+CurrentPassword = Annotated[
+    str,
+    StringConstraints(max_length=200),
+    AfterValidator(_required("Current password is required.")),
+]
+
+
+class ResetPasswordRequest(BaseModel):
+    """Send the token from the emailed link, or the current password when logged in."""
+
+    token: Token | None = None
+    current_password: CurrentPassword | None = Field(default=None, alias="currentPassword")
     new_password: Annotated[NewPassword, Field(alias="newPassword")]
 
     @field_validator("new_password")
@@ -106,10 +112,11 @@ class ChangePasswordRequest(BaseModel):
             raise ValueError("The new password must be different from the current one.")
         return value
 
-
-class ResetPasswordRequest(BaseModel):
-    token: Token
-    new_password: Annotated[NewPassword, Field(alias="newPassword")]
+    @model_validator(mode="after")
+    def _token_or_current_password(self) -> "ResetPasswordRequest":
+        if (self.token is None) == (self.current_password is None):
+            raise ValueError("Send exactly one of token or currentPassword.")
+        return self
 
 
 class MessageResponse(BaseModel):
