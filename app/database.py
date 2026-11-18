@@ -14,7 +14,9 @@ class Base(DeclarativeBase):
 def _make_engine(url: str):
     if url.startswith("sqlite"):
         return create_engine(url, connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+    # READ COMMITTED, so a read after a row lock sees what other requests have committed.
+    # MySQL's default (REPEATABLE READ) keeps showing the snapshot of the request's first read.
+    return create_engine(url, pool_pre_ping=True, pool_recycle=3600, isolation_level="READ COMMITTED")
 
 
 engine = _make_engine(get_settings().database_url)
