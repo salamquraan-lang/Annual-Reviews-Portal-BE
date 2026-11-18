@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.errors import register_error_handlers
 from app.mailer import Mailer, create_mailer
 from app.rate_limit import rate_limit_middleware
-from app.routers import auth, cycles, departments, users
+from app.routers import auth, cycles, departments, question_bank, templates, users
 
 
 async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -45,6 +45,8 @@ def create_app(mailer: Mailer | None = None) -> FastAPI:
     app.include_router(users.router)
     app.include_router(departments.router)
     app.include_router(cycles.router)
+    app.include_router(question_bank.router)
+    app.include_router(templates.router)
     return app
 
 
