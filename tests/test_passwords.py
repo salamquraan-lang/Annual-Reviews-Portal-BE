@@ -9,21 +9,34 @@ from app.security import hash_token
 from tests.conftest import PASSWORD, bearer, login
 
 RESET_MESSAGE = "If this email is registered, we have sent a link to reset the password."
+RESET_URL = "/api/auth/reset-password"
+VALIDATE_URL = "/api/auth/reset-password/validate"
 
 
 def change(client, user, current=PASSWORD, new="NewPass123"):
-    return client.post(
-        "/api/auth/change-password",
+    return client.patch(
+        RESET_URL,
         headers=bearer(user),
         json={"currentPassword": current, "newPassword": new},
     )
 
 
-class TestChangePassword:
+def reset(client, token, new="Brandnew123", **kwargs):
+    return client.patch(RESET_URL, json={"token": token, "newPassword": new}, **kwargs)
+
+
+def validate(client, token):
+    return client.post(VALIDATE_URL, json={"token": token})
+
+
+def reset_token(client, mailer, email="eli@example.test"):
+    client.post("/api/auth/forgot-password", json={"email": email})
+    return mailer.token("reset-password")
+
+
+class TestResetPasswordWithCurrentPassword:
     def test_requires_a_logged_in_user(self, client):
-        res = client.post(
-            "/api/auth/change-password", json={"currentPassword": PASSWORD, "newPassword": "NewPass123"}
-        )
+        res = client.patch(RESET_URL, json={"currentPassword": PASSWORD, "newPassword": "NewPass123"})
 
         assert res.status_code == 401
 
@@ -66,11 +79,7 @@ class TestChangePassword:
 
         with TestClient(create_app(mailer=mailer)) as other_device:
             login(other_device)
-            res = client.post(
-                "/api/auth/change-password",
-                headers=bearer(employee),
-                json={"currentPassword": PASSWORD, "newPassword": "NewPass123"},
-            )
+            res = change(client, employee)
             assert res.status_code == 200
             assert other_device.post("/api/auth/refresh").status_code == 401
         assert client.post("/api/auth/refresh").status_code == 200
@@ -86,6 +95,11 @@ class TestChangePassword:
         assert change(client, user).status_code == 200
         db.refresh(user)
         assert user.must_change_password is False
+
+    def test_refuses_a_deactivated_user(self, client, make_user):
+        user = make_user(is_active=False)
+
+        assert change(client, user).status_code == 401
 
 
 class TestForgotPassword:
@@ -117,101 +131,158 @@ class TestForgotPassword:
 
 
 class TestValidateResetLink:
-    def _token(self, client, mailer):
-        client.post("/api/auth/forgot-password", json={"email": "eli@example.test"})
-        return mailer.token("reset-password")
-
     def test_a_fresh_link_is_valid(self, client, mailer, employee):
-        token = self._token(client, mailer)
+        token = reset_token(client, mailer)
 
-        res = client.get("/api/auth/reset-password/validate", params={"token": token})
+        res = validate(client, token)
 
+        assert res.status_code == 200
         assert res.json() == {"valid": True}
 
-    def test_a_used_link_is_not_valid(self, client, mailer, employee):
-        token = self._token(client, mailer)
-        client.post("/api/auth/reset-password", json={"token": token, "newPassword": "Brandnew123"})
+    def test_validating_does_not_use_up_the_link(self, client, mailer, employee):
+        token = reset_token(client, mailer)
 
-        assert client.get("/api/auth/reset-password/validate", params={"token": token}).json() == {
-            "valid": False
-        }
+        validate(client, token)
+
+        assert validate(client, token).json() == {"valid": True}
+
+    def test_a_used_link_is_not_valid(self, client, mailer, employee):
+        token = reset_token(client, mailer)
+        reset(client, token)
+
+        assert validate(client, token).json() == {"valid": False}
 
     def test_an_expired_link_is_not_valid(self, client, db, mailer, employee):
-        token = self._token(client, mailer)
+        token = reset_token(client, mailer)
         db.scalar(select(AuthToken)).expires_at = utcnow() - timedelta(seconds=1)
         db.commit()
 
-        assert client.get("/api/auth/reset-password/validate", params={"token": token}).json() == {
-            "valid": False
-        }
+        assert validate(client, token).json() == {"valid": False}
 
     def test_a_link_of_a_deactivated_user_is_not_valid(self, client, db, mailer, employee):
-        token = self._token(client, mailer)
+        token = reset_token(client, mailer)
         db.get(User, employee.id).is_active = False
         db.commit()
 
-        assert client.get("/api/auth/reset-password/validate", params={"token": token}).json() == {
-            "valid": False
-        }
+        assert validate(client, token).json() == {"valid": False}
 
     def test_a_verification_link_is_not_a_valid_reset_link(self, client, mailer, make_user):
         make_user(email_verified_at=None)
         client.post("/api/auth/resend-verification", json={"email": "eli@example.test"})
         token = mailer.token("verify-email")
 
-        assert client.get("/api/auth/reset-password/validate", params={"token": token}).json() == {
-            "valid": False
-        }
+        assert validate(client, token).json() == {"valid": False}
 
-    def test_a_missing_token_is_not_valid(self, client):
-        assert client.get("/api/auth/reset-password/validate").json() == {"valid": False}
+    def test_an_unknown_token_is_not_valid(self, client):
+        assert validate(client, "unknown").json() == {"valid": False}
+
+    @pytest.mark.parametrize("body", [{}, {"token": ""}, {"token": "   "}])
+    def test_a_missing_token_is_rejected(self, client, body):
+        res = client.post(VALIDATE_URL, json=body)
+
+        assert res.status_code == 400
+        assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_the_token_is_no_longer_accepted_in_the_url(self, client, mailer, employee):
+        token = reset_token(client, mailer)
+
+        res = client.get(VALIDATE_URL, params={"token": token})
+
+        assert res.status_code == 405
 
 
-class TestResetPassword:
-    def _token(self, client, mailer):
-        client.post("/api/auth/forgot-password", json={"email": "eli@example.test"})
-        return mailer.token("reset-password")
-
+class TestResetPasswordWithLink:
     def test_sets_the_new_password_and_ends_every_session(self, client, db, mailer, employee):
         login(client)
-        token = self._token(client, mailer)
+        token = reset_token(client, mailer)
 
-        res = client.post("/api/auth/reset-password", json={"token": token, "newPassword": "Brandnew123"})
+        res = reset(client, token)
 
         assert res.status_code == 200
         assert db.scalar(select(RefreshToken)) is None
         assert login(client, password="Brandnew123").status_code == 200
         assert login(client).status_code == 401
 
+    def test_does_not_need_a_logged_in_user_or_the_current_password(self, client, mailer, employee):
+        token = reset_token(client, mailer)
+
+        res = reset(client, token, headers={"Authorization": "Bearer not-a-real-token"})
+
+        assert res.status_code == 200
+
     def test_marks_the_email_verified_since_the_user_opened_a_link_sent_to_it(
         self, client, db, mailer, make_user
     ):
         user = make_user(email_verified_at=None)
-        client.post("/api/auth/forgot-password", json={"email": user.email})
 
-        client.post(
-            "/api/auth/reset-password",
-            json={"token": mailer.token("reset-password"), "newPassword": "Brandnew123"},
-        )
+        reset(client, reset_token(client, mailer, user.email))
 
         db.refresh(user)
         assert user.email_verified_at is not None
 
     def test_the_link_works_only_once(self, client, mailer, employee):
-        token = self._token(client, mailer)
-        client.post("/api/auth/reset-password", json={"token": token, "newPassword": "Brandnew123"})
+        token = reset_token(client, mailer)
+        reset(client, token)
 
-        res = client.post("/api/auth/reset-password", json={"token": token, "newPassword": "Another123"})
+        res = reset(client, token, new="Another123")
 
         assert res.status_code == 400
         assert res.json()["error"]["code"] == "INVALID_OR_EXPIRED_TOKEN"
 
     def test_rejects_a_weak_password_without_using_up_the_link(self, client, mailer, employee):
-        token = self._token(client, mailer)
+        token = reset_token(client, mailer)
 
-        res = client.post("/api/auth/reset-password", json={"token": token, "newPassword": "weak"})
+        res = reset(client, token, new="weak")
 
         assert res.status_code == 400
-        assert client.get("/api/auth/reset-password/validate", params={"token": token}).json() == {
-            "valid": True
-        }
+        assert validate(client, token).json() == {"valid": True}
+
+
+class TestResetPasswordRequest:
+    MESSAGE = "Send exactly one of token or currentPassword."
+
+    def test_refuses_a_token_together_with_the_current_password(self, client, db, mailer, employee):
+        token = reset_token(client, mailer)
+
+        res = client.patch(
+            RESET_URL,
+            headers=bearer(employee),
+            json={"token": token, "currentPassword": PASSWORD, "newPassword": "Brandnew123"},
+        )
+
+        assert res.status_code == 400
+        assert res.json()["error"]["details"][0]["message"] == self.MESSAGE
+        assert validate(client, token).json() == {"valid": True}
+        db.refresh(employee)
+        assert bcrypt.checkpw(PASSWORD.encode(), employee.password_hash.encode())
+
+    def test_refuses_a_new_password_alone(self, client, employee):
+        res = client.patch(RESET_URL, headers=bearer(employee), json={"newPassword": "Brandnew123"})
+
+        assert res.status_code == 400
+        assert res.json()["error"]["details"][0]["message"] == self.MESSAGE
+
+    def test_requires_a_new_password(self, client, mailer, employee):
+        res = client.patch(RESET_URL, json={"token": reset_token(client, mailer)})
+
+        assert res.status_code == 400
+        assert res.json()["error"]["details"] == [
+            {"field": "newPassword", "message": "This field is required."}
+        ]
+
+    def test_post_is_no_longer_accepted(self, client, mailer, employee):
+        token = reset_token(client, mailer)
+
+        res = client.post(RESET_URL, json={"token": token, "newPassword": "Brandnew123"})
+
+        assert res.status_code == 405
+        assert validate(client, token).json() == {"valid": True}
+
+    def test_the_change_password_endpoint_is_gone(self, client, employee):
+        res = client.post(
+            "/api/auth/change-password",
+            headers=bearer(employee),
+            json={"currentPassword": PASSWORD, "newPassword": "NewPass123"},
+        )
+
+        assert res.status_code == 404
