@@ -19,8 +19,6 @@ INACTIVE = "DEPARTMENT_INACTIVE"
 PARENT_INACTIVE = "DEPARTMENT_PARENT_INACTIVE"
 HAS_ACTIVE_USERS = "DEPARTMENT_HAS_ACTIVE_USERS"
 HAS_ACTIVE_CHILDREN = "DEPARTMENT_HAS_ACTIVE_CHILDREN"
-ALREADY_INACTIVE = "DEPARTMENT_ALREADY_INACTIVE"
-ALREADY_ACTIVE = "DEPARTMENT_ALREADY_ACTIVE"
 
 MYSQL_DUPLICATE_ENTRY = 1062
 
@@ -214,12 +212,39 @@ def create_department(db: Session, actor_id: int, name: str, parent_id: int | No
     return department
 
 
-def rename_department(db: Session, actor_id: int, department_id: int, name: str) -> Department:
+def update_department(
+    db: Session,
+    actor_id: int,
+    department_id: int,
+    name: str | None = None,
+    is_active: bool | None = None,
+) -> Department:
+    """Change the name and/or the active state in one transaction.
+
+    The name is applied first, so turning a department on checks the new name.
+    Sending a value the department already has changes nothing and is not an error.
+    """
     department = _lock(db, department_id).get(department_id)
     if department is None:
         raise _not_found()
+
+    try:
+        if name is not None:
+            _apply_rename(db, actor_id, department, name)
+        if is_active is True:
+            _apply_reactivate(db, actor_id, department)
+        elif is_active is False:
+            _apply_deactivate(db, actor_id, department)
+        db.commit()
+    except AppError:
+        db.rollback()
+        raise
+    return department
+
+
+def _apply_rename(db: Session, actor_id: int, department: Department, name: str) -> None:
     if department.name == name:
-        return department
+        return
     if department.is_active and _name_is_taken(db, name, department.parent_id, exclude_id=department.id):
         raise _name_taken()
 
@@ -227,11 +252,8 @@ def rename_department(db: Session, actor_id: int, department_id: int, name: str)
     department.name = name
     _flush(db)
     _audit(db, actor_id, "rename", department.id, {"from": old_name, "to": name})
-    db.commit()
-    return department
 
-
-def move_department(db: Session, actor_id: int, department_id: int, parent_id: int | None) -> Department:
+def change_department_parent(db: Session, actor_id: int, department_id: int, parent_id: int | None) -> Department:
     ids = [department_id] if parent_id is None else [department_id, parent_id]
     locked = _lock(db, *ids)
     department = locked.get(department_id)
@@ -259,15 +281,12 @@ def move_department(db: Session, actor_id: int, department_id: int, parent_id: i
     return department
 
 
-def deactivate_department(db: Session, actor_id: int, department_id: int) -> Department:
-    department = _lock(db, department_id).get(department_id)
-    if department is None:
-        raise _not_found()
+def _apply_deactivate(db: Session, actor_id: int, department: Department) -> None:
     if not department.is_active:
-        raise AppError(409, ALREADY_INACTIVE, "The department is already inactive.")
+        return
 
     user_count = db.scalar(
-        select(func.count()).select_from(User).where(User.department_id == department_id, User.is_active.is_(True))
+        select(func.count()).select_from(User).where(User.department_id == department.id, User.is_active.is_(True))
     )
     if user_count:
         raise AppError(
@@ -276,7 +295,7 @@ def deactivate_department(db: Session, actor_id: int, department_id: int) -> Dep
     child_count = db.scalar(
         select(func.count())
         .select_from(Department)
-        .where(Department.parent_id == department_id, Department.is_active.is_(True))
+        .where(Department.parent_id == department.id, Department.is_active.is_(True))
     )
     if child_count:
         raise AppError(
@@ -286,16 +305,11 @@ def deactivate_department(db: Session, actor_id: int, department_id: int) -> Dep
     department.is_active = False
     _flush(db)
     _audit(db, actor_id, "deactivate", department.id)
-    db.commit()
-    return department
 
 
-def reactivate_department(db: Session, actor_id: int, department_id: int) -> Department:
-    department = _lock(db, department_id).get(department_id)
-    if department is None:
-        raise _not_found()
+def _apply_reactivate(db: Session, actor_id: int, department: Department) -> None:
     if department.is_active:
-        raise AppError(409, ALREADY_ACTIVE, "The department is already active.")
+        return
 
     if department.parent_id is not None:
         parent = _lock(db, department.parent_id).get(department.parent_id)
@@ -307,8 +321,6 @@ def reactivate_department(db: Session, actor_id: int, department_id: int) -> Dep
     department.is_active = True
     _flush(db)
     _audit(db, actor_id, "reactivate", department.id)
-    db.commit()
-    return department
 
 
 def move_users(db: Session, actor_id: int, department_id: int, target_id: int) -> int:

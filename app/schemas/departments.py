@@ -7,6 +7,9 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    StrictBool,
+    StrictInt,
+    field_validator,
     model_validator,
 )
 
@@ -98,26 +101,43 @@ class DepartmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: DepartmentName
-    parent_id: int | None = Field(default=None, alias="parentId", ge=1)
+    parent_id: StrictInt | None = Field(default=None, alias="parentId", ge=1)
 
 
-class DepartmentRename(BaseModel):
+class DepartmentUpdate(BaseModel):
+    """Body of PATCH /api/departments/{id}. Only the fields that are sent are changed."""
+
     model_config = ConfigDict(extra="forbid")
 
-    name: DepartmentName
+    name: DepartmentName | None = None
+    is_active: StrictBool | None = Field(default=None, alias="isActive")
+
+    @field_validator("name", "is_active", mode="before")
+    @classmethod
+    def _not_null(cls, value: object) -> object:
+        # Runs only for fields that were sent. Neither field can be empty.
+        if value is None:
+            raise ValueError("This field cannot be empty.")
+        return value
+
+    @model_validator(mode="after")
+    def _check_sent_fields(self) -> "DepartmentUpdate":
+        if not self.model_fields_set:
+            raise ValueError("Send at least one field to change.")
+        return self
 
 
-class DepartmentMove(BaseModel):
+class DepartmentChangeParent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Required, but it may be null. Null means top level.
-    parent_id: int | None = Field(alias="parentId", ge=1)
+    parent_id: StrictInt | None = Field(alias="parentId", ge=1)
 
 
 class DepartmentMoveUsers(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_department_id: int = Field(alias="targetDepartmentId", ge=1)
+    target_department_id: StrictInt = Field(alias="targetDepartmentId", ge=1)
 
 
 class MoveUsersResponse(BaseModel):
