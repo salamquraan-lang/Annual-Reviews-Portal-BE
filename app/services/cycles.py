@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError, bad_request
 from app.models import Cycle, CycleStatus, CycleType, utcnow
-from app.services import participants
+from app.services import snapshot
 
 # Error codes. Message text lives next to the line that raises it.
 NOT_FOUND = "CYCLE_NOT_FOUND"
@@ -180,7 +180,7 @@ def _problem_detail(problem: Problem) -> dict:
 
 
 def _participant_problems(db: Session) -> list[Problem]:
-    return [Problem(p.code, p.message, p.user_id) for p in participants.readiness_problems(db)]
+    return [Problem(p.code, p.message, p.user_id) for p in snapshot.readiness_problems(db)]
 
 
 # ------------------------------------------------------------------ reads
@@ -450,7 +450,7 @@ def _template_problems(db: Session, cycle: Cycle) -> list[Problem]:
 
 
 def _take_snapshot_and_assign(db: Session, cycle: Cycle) -> None:
-    participants.take_snapshot(db, cycle)
+    snapshot.take_snapshot(db, cycle)
 
 
 def _archive_unused_questions(db: Session, cycle: Cycle) -> None:
