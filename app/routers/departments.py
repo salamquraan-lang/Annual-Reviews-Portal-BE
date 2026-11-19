@@ -5,16 +5,16 @@ from fastapi import APIRouter, Depends, Path, Query, Response, status
 from app.dependencies import DbSession, require_roles
 from app.models import Department, Role, User
 from app.schemas.departments import (
+    DepartmentChangeParent,
     DepartmentChildOut,
     DepartmentCreate,
     DepartmentDetail,
     DepartmentListQuery,
     DepartmentListResponse,
-    DepartmentMove,
     DepartmentMoveUsers,
     DepartmentOut,
-    DepartmentRename,
     DepartmentTreeNode,
+    DepartmentUpdate,
     MoveUsersResponse,
 )
 from app.services import departments
@@ -103,38 +103,34 @@ def create_department(
 
 
 @router.patch("/{department_id}")
-def rename_department(
+def update_department(
     db: DbSession,
     actor: SuperAdmin,
     department_id: DepartmentId,
-    body: DepartmentRename,
+    body: DepartmentUpdate,
 ) -> DepartmentOut:
     return _to_out(
-        departments.rename_department(db, actor.id, department_id, body.name)
+        departments.update_department(
+            db,
+            actor.id,
+            department_id,
+            **body.model_dump(exclude_unset=True),
+        )
     )
 
 
 @router.put("/{department_id}/parent")
-def move_department(
-    db: DbSession, actor: SuperAdmin, department_id: DepartmentId, body: DepartmentMove
+def change_department_parent(
+    db: DbSession,
+    actor: SuperAdmin,
+    department_id: DepartmentId,
+    body: DepartmentChangeParent,
 ) -> DepartmentOut:
     return _to_out(
-        departments.move_department(db, actor.id, department_id, body.parent_id)
+        departments.change_department_parent(
+            db, actor.id, department_id, body.parent_id
+        )
     )
-
-
-@router.post("/{department_id}/deactivate")
-def deactivate_department(
-    db: DbSession, actor: SuperAdmin, department_id: DepartmentId
-) -> DepartmentOut:
-    return _to_out(departments.deactivate_department(db, actor.id, department_id))
-
-
-@router.post("/{department_id}/reactivate")
-def reactivate_department(
-    db: DbSession, actor: SuperAdmin, department_id: DepartmentId
-) -> DepartmentOut:
-    return _to_out(departments.reactivate_department(db, actor.id, department_id))
 
 
 @router.post("/{department_id}/move-users")

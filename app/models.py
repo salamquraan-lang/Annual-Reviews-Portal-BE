@@ -10,9 +10,12 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    SmallInteger,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects import mysql
@@ -226,7 +229,9 @@ class Criterion(Base):
     name_key: Mapped[str] = mapped_column(String(360))
     description: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        Timestamp, default=utcnow, onupdate=utcnow
+    )
 
 
 class Question(Base):
@@ -235,16 +240,27 @@ class Question(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     criterion_id: Mapped[int] = mapped_column(
-        ForeignKey("criteria.id", name="questions_criterion_id_fkey", ondelete="RESTRICT", onupdate="CASCADE")
+        ForeignKey(
+            "criteria.id",
+            name="questions_criterion_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        )
     )
     text: Mapped[str] = mapped_column(String(500))
     kind: Mapped[QuestionKind] = mapped_column(
-        Enum(QuestionKind, name="question_kind", values_callable=lambda e: [m.value for m in e])
+        Enum(
+            QuestionKind,
+            name="question_kind",
+            values_callable=lambda e: [m.value for m in e],
+        )
     )
     # Set when the question is archived (Q9). NULL means it is not archived.
     archived_at: Mapped[datetime | None] = mapped_column(Timestamp)
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        Timestamp, default=utcnow, onupdate=utcnow
+    )
 
     criterion: Mapped[Criterion] = relationship(lazy="joined")
 
@@ -253,24 +269,42 @@ class Template(Base):
     __tablename__ = "templates"
     __table_args__ = (
         # T1: a cycle owns at most one template for each review type.
-        UniqueConstraint("cycle_id", "review_type", name="templates_cycle_id_review_type_key"),
+        UniqueConstraint(
+            "cycle_id", "review_type", name="templates_cycle_id_review_type_key"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # ON DELETE CASCADE: deleting a draft cycle deletes its templates (CYC-8).
     cycle_id: Mapped[int] = mapped_column(
-        ForeignKey("cycles.id", name="templates_cycle_id_fkey", ondelete="CASCADE", onupdate="CASCADE")
+        ForeignKey(
+            "cycles.id",
+            name="templates_cycle_id_fkey",
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        )
     )
     review_type: Mapped[ReviewType] = mapped_column(
-        Enum(ReviewType, name="review_type", values_callable=lambda e: [m.value for m in e])
+        Enum(
+            ReviewType,
+            name="review_type",
+            values_callable=lambda e: [m.value for m in e],
+        )
     )
     name: Mapped[str] = mapped_column(String(150))
     # T7: the template this one's questions were last copied from.
     copied_from_id: Mapped[int | None] = mapped_column(
-        ForeignKey("templates.id", name="templates_copied_from_id_fkey", ondelete="SET NULL", onupdate="CASCADE")
+        ForeignKey(
+            "templates.id",
+            name="templates_copied_from_id_fkey",
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+        )
     )
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        Timestamp, default=utcnow, onupdate=utcnow
+    )
 
     cycle: Mapped[Cycle] = relationship(lazy="joined")
 
@@ -279,20 +313,28 @@ class TemplateQuestion(Base):
     __tablename__ = "template_questions"
     __table_args__ = (
         Index("template_questions_question_id_idx", "question_id"),
-        CheckConstraint("weight IS NULL OR weight >= 1", name="template_questions_weight_check"),
+        CheckConstraint(
+            "weight IS NULL OR weight >= 1", name="template_questions_weight_check"
+        ),
         CheckConstraint("position >= 1", name="template_questions_position_check"),
     )
 
     # The primary key enforces T3: a question appears at most once in a template.
     template_id: Mapped[int] = mapped_column(
         ForeignKey(
-            "templates.id", name="template_questions_template_id_fkey", ondelete="CASCADE", onupdate="CASCADE"
+            "templates.id",
+            name="template_questions_template_id_fkey",
+            ondelete="CASCADE",
+            onupdate="CASCADE",
         ),
         primary_key=True,
     )
     question_id: Mapped[int] = mapped_column(
         ForeignKey(
-            "questions.id", name="template_questions_question_id_fkey", ondelete="RESTRICT", onupdate="CASCADE"
+            "questions.id",
+            name="template_questions_question_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
         ),
         primary_key=True,
     )
@@ -302,3 +344,173 @@ class TemplateQuestion(Base):
     weight: Mapped[int | None] = mapped_column(Integer)
 
     question: Mapped[Question] = relationship(lazy="joined")
+
+    # ------------------------------------------------- participants and assignments (cluster 7)
+
+
+class AssignmentStatus(enum.StrEnum):
+    pending = "pending"
+    draft = "draft"
+    submitted = "submitted"
+
+
+class CycleParticipant(Base):
+    """One person in one cycle, with the department and manager they had when it opened (C6)."""
+
+    __tablename__ = "cycle_participants"
+    __table_args__ = (
+        Index("cycle_participants_user_id_idx", "user_id"),
+        Index("cycle_participants_department_id_idx", "department_id", "cycle_id"),
+        Index("cycle_participants_manager_id_idx", "manager_id", "cycle_id"),
+    )
+
+    cycle_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "cycles.id",
+            name="cycle_participants_cycle_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "users.id",
+            name="cycle_participants_user_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+    )
+    # Snapshot values. They do not follow later changes to the user.
+    department_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "departments.id",
+            name="cycle_participants_department_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        )
+    )
+    # There is no foreign key to cycle_participants for the manager. The service checks that the
+    # manager is a participant too. The key to users only keeps the id real.
+    manager_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            name="cycle_participants_manager_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class Assignment(Base):
+    """One review to write: the reviewer writes about the reviewee, in one cycle, of one type."""
+
+    __tablename__ = "assignments"
+    __table_args__ = (
+        # P3: the same review is never assigned twice.
+        UniqueConstraint(
+            "cycle_id",
+            "reviewer_id",
+            "reviewee_id",
+            "review_type",
+            name="assignments_cycle_reviewer_reviewee_type_key",
+        ),
+        ForeignKeyConstraint(
+            ["cycle_id", "reviewer_id"],
+            ["cycle_participants.cycle_id", "cycle_participants.user_id"],
+            name="assignments_reviewer_fkey",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["cycle_id", "reviewee_id"],
+            ["cycle_participants.cycle_id", "cycle_participants.user_id"],
+            name="assignments_reviewee_fkey",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        # The cycle must have a template of this type. There is no template_id column.
+        ForeignKeyConstraint(
+            ["cycle_id", "review_type"],
+            ["templates.cycle_id", "templates.review_type"],
+            name="assignments_template_fkey",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        CheckConstraint(
+            "(review_type = 'self' AND reviewer_id = reviewee_id)"
+            " OR (review_type <> 'self' AND reviewer_id <> reviewee_id)",
+            name="assignments_people_check",
+        ),
+        CheckConstraint(
+            "(status = 'submitted' AND submitted_at IS NOT NULL) OR (status <> 'submitted' AND submitted_at IS NULL)",
+            name="assignments_submitted_at_check",
+        ),
+        Index("assignments_reviewee_idx", "cycle_id", "reviewee_id", "review_type"),
+        Index("assignments_type_status_idx", "cycle_id", "review_type", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cycle_id: Mapped[int] = mapped_column(Integer)
+    reviewer_id: Mapped[int] = mapped_column(Integer)
+    reviewee_id: Mapped[int] = mapped_column(Integer)
+    review_type: Mapped[ReviewType] = mapped_column(
+        Enum(
+            ReviewType,
+            name="review_type",
+            values_callable=lambda e: [m.value for m in e],
+        )
+    )
+    status: Mapped[AssignmentStatus] = mapped_column(
+        Enum(
+            AssignmentStatus,
+            name="assignment_status",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        default=AssignmentStatus.pending,
+        server_default=AssignmentStatus.pending.value,
+    )
+    # Set exactly when the status is submitted (W8).
+    submitted_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class Answer(Base):
+    """The saved answer to one question of one assignment. Cluster 8 writes and reads it."""
+
+    __tablename__ = "answers"
+    __table_args__ = (
+        Index("answers_question_id_idx", "question_id"),
+        CheckConstraint(
+            "rating IS NULL OR (rating >= 1 AND rating <= 5)",
+            name="answers_rating_check",
+        ),
+    )
+
+    # The database removes the answers when their assignment is removed.
+    assignment_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "assignments.id",
+            name="answers_assignment_id_fkey",
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+    )
+    question_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "questions.id",
+            name="answers_question_id_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+    )
+    rating: Mapped[int | None] = mapped_column(SmallInteger)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        Timestamp, default=utcnow, onupdate=utcnow
+    )

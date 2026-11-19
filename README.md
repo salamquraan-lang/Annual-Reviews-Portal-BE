@@ -116,8 +116,51 @@ https://n8jspssafq.apidog.io/
 
 ## Tests
 
+The tests run on MySQL only. SQLite is not supported, because it ignores row locks and never raises MySQL's duplicate-key error, so a green run on it can hide real bugs.
+
+**One-time setup**
+
+1. Create an empty test database. Its name must end in `_test`. The tests refuse to run on any other name, so they cannot touch your development data.
+
+   ```bash
+   mysql -u root -p -e "CREATE DATABASE employee_review_test CHARACTER SET utf8mb4; GRANT ALL ON employee_review_test.* TO 'review'@'localhost';"
+   ```
+
+   Use your own MySQL user in place of `review`.
+
+2. Create a `.env.test` file in the project root. Git ignores it.
+
+   ```
+   TEST_DATABASE_URL=mysql+pymysql://review:YOUR_PASSWORD@127.0.0.1:3306/employee_review_test
+   ```
+
+   If the password has special characters such as `@`, `/` or `:`, URL-encode them.
+
+**Run**
+
 ```bash
-poetry run pytest
+poetry run pytest -q
 ```
 
-The tests don't need MySQL.
+The first run builds the schema with the Alembic migrations. Each test then starts from empty tables. A full run takes about two minutes.
+
+To run part of the suite:
+
+```bash
+poetry run pytest -q tests/test_departments.py   # one file
+poetry run pytest -q -k "loop"                   # tests whose name contains "loop"
+```
+
+**What is covered**
+
+| File | Covers |
+| --- | --- |
+| `tests/test_departments.py` | Departments API: list, tree, get, create, update (PATCH), change parent, move users |
+| `tests/test_cycles.py` | Cycles API: create, copy, update, delete, status changes, readiness, current cycle |
+| `tests/test_mysql_concurrency.py` | Races and MySQL-specific behavior: duplicate-key mapping, simultaneous requests |
+| `tests/test_users.py` and the other `test_*.py` files | Auth, sessions, passwords, signup, users |
+
+**Not covered yet**
+
+- The audit log. Its hook is still a stub.
+- The template, snapshot, score and reward steps of the cycle lifecycle. They stay stubs until their clusters exist.
