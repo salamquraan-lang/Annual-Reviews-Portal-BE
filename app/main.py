@@ -13,6 +13,7 @@ from app.routers import (
     auth,
     cycles,
     departments,
+    my_work,
     participants,
     question_bank,
     templates,
@@ -58,6 +59,7 @@ def create_app(mailer: Mailer | None = None) -> FastAPI:
     app.include_router(templates.router)
     app.include_router(participants.router)
     app.include_router(assignments.router)
+    app.include_router(my_work.router)
     return app
 
 
