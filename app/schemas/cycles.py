@@ -133,8 +133,11 @@ class CycleListResponse(BaseModel):
 
 
 class ReadinessProblem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     code: str
     message: str
+    user_id: int | None = Field(default=None, serialization_alias="userId")
 
 
 class ReadinessResponse(BaseModel):

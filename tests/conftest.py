@@ -56,6 +56,7 @@ import bcrypt
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine
@@ -64,6 +65,7 @@ from app.main import create_app
 from app.models import Cycle, CycleStatus, CycleType, Department, Role, User, utcnow
 from app.rate_limit import limiter
 from app.security import create_access_token
+from app.services import templates as template_service
 
 PASSWORD = "Password123"
 PASSWORD_HASH = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt(4)).decode()
@@ -191,6 +193,40 @@ def make_department(db: Session):
         return department
 
     return factory
+
+
+@pytest.fixture
+def give_templates(db: Session):
+    """Create the four empty templates of a cycle, as creating a cycle through the API will (T9).
+
+    Opening a cycle creates assignments, and each one needs the template of its review type.
+    """
+
+    def apply(cycle: Cycle) -> None:
+        template_service.create_default_templates(db, cycle)
+        db.commit()
+
+    return apply
+
+
+@pytest.fixture
+def give_everyone_a_department(db: Session):
+    """Put every active user who has no department into one department.
+
+    Opening a cycle needs a department for every active user. Call this just before opening.
+    """
+
+    def apply(name: str = "Staff") -> Department:
+        department = Department(name=name)
+        db.add(department)
+        db.flush()
+        db.execute(
+            update(User).where(User.is_active.is_(True), User.department_id.is_(None)).values(department_id=department.id)
+        )
+        db.commit()
+        return department
+
+    return apply
 
 
 @pytest.fixture

@@ -70,12 +70,15 @@ def get_cycle(db: DbSession, cycle_id: CycleId) -> CycleOut:
     return _to_out(cycles.get_cycle(db, cycle_id))
 
 
-@admin_router.get("/{cycle_id}/readiness")
+@admin_router.get("/{cycle_id}/readiness", response_model_exclude_none=True)
 def get_readiness(db: DbSession, cycle_id: CycleId) -> ReadinessResponse:
     problems = cycles.check_readiness(db, cycle_id)
     return ReadinessResponse(
         ready=not problems,
-        problems=[ReadinessProblem(code=problem.code, message=problem.message) for problem in problems],
+        problems=[
+            ReadinessProblem(code=problem.code, message=problem.message, user_id=problem.user_id)
+            for problem in problems
+        ],
     )
 
 

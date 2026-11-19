@@ -495,16 +495,18 @@ class TestDelete:
 
 
 class TestReadiness:
-    def test_a_lone_draft_is_ready(self, client, headers, make_cycle):
+    def test_a_lone_draft_is_ready(self, client, headers, make_cycle, give_everyone_a_department):
         cycle = make_cycle()
+        give_everyone_a_department()
 
         body = client.get(f"{BASE}/{cycle.id}/readiness", headers=headers).json()
 
         assert body == {"ready": True, "problems": []}
 
-    def test_reports_that_another_cycle_is_open(self, client, headers, make_cycle):
+    def test_reports_that_another_cycle_is_open(self, client, headers, make_cycle, give_everyone_a_department):
         make_cycle(year=2025, status=CycleStatus.open)
         cycle = make_cycle(year=2026)
+        give_everyone_a_department()
 
         body = client.get(f"{BASE}/{cycle.id}/readiness", headers=headers).json()
 
@@ -528,8 +530,10 @@ class TestReadiness:
 class TestLifecycle:
     """draft -> open -> closed -> finalized, with closed -> open (reopen) as the one way back."""
 
-    def test_follows_the_whole_path(self, client, headers, make_cycle):
+    def test_follows_the_whole_path(self, client, headers, make_cycle, give_templates, give_everyone_a_department):
         cycle = make_cycle()
+        give_templates(cycle)
+        give_everyone_a_department()
 
         assert client.post(f"{BASE}/{cycle.id}/open", headers=headers).json()["status"] == "open"
         assert client.post(f"{BASE}/{cycle.id}/close", headers=headers).json()["status"] == "closed"
@@ -537,8 +541,12 @@ class TestLifecycle:
         assert client.post(f"{BASE}/{cycle.id}/close", headers=headers).json()["status"] == "closed"
         assert client.post(f"{BASE}/{cycle.id}/finalize", headers=headers).json()["status"] == "finalized"
 
-    def test_an_opened_cycle_becomes_the_current_one(self, client, headers, make_cycle, employee):
+    def test_an_opened_cycle_becomes_the_current_one(
+        self, client, headers, make_cycle, employee, give_templates, give_everyone_a_department
+    ):
         cycle = make_cycle()
+        give_templates(cycle)
+        give_everyone_a_department()
         client.post(f"{BASE}/{cycle.id}/open", headers=headers)
 
         res = client.get(f"{BASE}/current", headers=bearer(employee))
@@ -580,9 +588,13 @@ class TestLifecycle:
         assert res.status_code == 409
         assert error_code(res) == "ANOTHER_CYCLE_OPEN"
 
-    def test_allows_opening_again_after_the_open_cycle_is_closed(self, client, headers, make_cycle):
+    def test_allows_opening_again_after_the_open_cycle_is_closed(
+        self, client, headers, make_cycle, give_templates, give_everyone_a_department
+    ):
         first = make_cycle(year=2025, status=CycleStatus.open)
         second = make_cycle(year=2026)
+        give_templates(second)
+        give_everyone_a_department()
         client.post(f"{BASE}/{first.id}/close", headers=headers)
 
         res = client.post(f"{BASE}/{second.id}/open", headers=headers)

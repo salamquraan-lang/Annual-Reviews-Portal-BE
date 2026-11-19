@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError, bad_request
 from app.models import Cycle, CycleStatus, CycleType, utcnow
+from app.services import participants
 
 # Error codes. Message text lives next to the line that raises it.
 NOT_FOUND = "CYCLE_NOT_FOUND"
@@ -57,6 +58,7 @@ class CyclePage:
 class Problem:
     code: str
     message: str
+    user_id: int | None = None
 
 
 @dataclass
@@ -170,6 +172,17 @@ def _plain(values: dict) -> dict:
     }
 
 
+def _problem_detail(problem: Problem) -> dict:
+    detail = {"code": problem.code, "message": problem.message}
+    if problem.user_id is not None:
+        detail["userId"] = problem.user_id
+    return detail
+
+
+def _participant_problems(db: Session) -> list[Problem]:
+    return [Problem(p.code, p.message, p.user_id) for p in participants.readiness_problems(db)]
+
+
 # ------------------------------------------------------------------ reads
 
 
@@ -223,6 +236,7 @@ def check_readiness(db: Session, cycle_id: int) -> list[Problem]:
     if _other_open_cycle_exists(db, exclude_id=cycle.id):
         problems.append(Problem(ANOTHER_OPEN, "Another cycle is already open. Close it first."))
     problems.extend(_template_problems(db, cycle))
+    problems.extend(_participant_problems(db))
     return problems
 
 
@@ -331,12 +345,13 @@ def open_cycle(db: Session, actor_id: int, cycle_id: int) -> Cycle:
     _require_status(cycle, CycleStatus.draft)
     _require_no_other_open(db, cycle)
     problems = _template_problems(db, cycle)
+    problems.extend(_participant_problems(db))
     if problems:
         raise AppError(
             409,
             NOT_READY,
             "The cycle is not ready to open.",
-            details=[{"code": problem.code, "message": problem.message} for problem in problems],
+            details=[_problem_detail(problem) for problem in problems],
         )
 
     # Change the status first. If another request opened a cycle at the same moment,
@@ -435,10 +450,7 @@ def _template_problems(db: Session, cycle: Cycle) -> list[Problem]:
 
 
 def _take_snapshot_and_assign(db: Session, cycle: Cycle) -> None:
-    # TODO(C6, P1, PART-1): make every active user a participant with a snapshot of their
-    # department and manager, and create the self, manager and upward assignments.
-    # Needs cluster 7.
-    return None
+    participants.take_snapshot(db, cycle)
 
 
 def _archive_unused_questions(db: Session, cycle: Cycle) -> None:
@@ -476,7 +488,6 @@ def _create_reward_proposals(db: Session, cycle: Cycle) -> list[FinalizeWarning]
 #   _copy_contents              CYC-2, S8      clusters 6, 9 and 10
 #   _delete_templates           CYC-8          cluster 6
 #   _template_problems          C3, T6, R7     clusters 6 and 9
-#   _take_snapshot_and_assign   C6, P1         cluster 7
 #   _archive_unused_questions   Q12, Q8        cluster 5
 #   _calculate_scores           SCR-3, S6      cluster 9
 #   _discard_results            C8             cluster 9
