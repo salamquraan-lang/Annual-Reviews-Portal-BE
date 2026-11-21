@@ -119,6 +119,51 @@ class ParticipantDetail(ParticipantOut):
 # -------------------------------------------------------- paged responses
 
 
+class RefreshBody(BaseModel):
+    """The reviews the admin has seen and agreed to discard when refreshing a person."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A refresh removes at most four reviews, so a longer list can never match.
+    discard_assignment_ids: list[BodyId] | None = Field(
+        default=None, alias="discardAssignmentIds", max_length=20
+    )
+
+
+class DepartmentChange(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: DepartmentRef = Field(serialization_alias="from")
+    to: DepartmentRef
+
+
+class ManagerChange(BaseModel):
+    """Either side is null when the person had no manager before or has none now."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: UserRef | None = Field(serialization_alias="from")
+    to: UserRef | None
+
+
+class RefreshChanges(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # Null when that part did not change.
+    department: DepartmentChange | None
+    manager: ManagerChange | None
+    created_assignment_ids: list[int] = Field(
+        serialization_alias="createdAssignmentIds"
+    )
+    removed_assignment_ids: list[int] = Field(
+        serialization_alias="removedAssignmentIds"
+    )
+
+
+class RefreshResponse(ParticipantDetail):
+    changes: RefreshChanges
+
+
 class ParticipantListResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

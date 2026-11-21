@@ -1,19 +1,28 @@
 """The people of a cycle: the list, one person's page, and adding a person."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import Row, func, select
+from sqlalchemy import Row, and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from app.errors import AppError, bad_request
-from app.models import CycleParticipant, Department, User
-from app.services import assignments, cycles, snapshot
+from app.errors import AppError, bad_request, forbidden
+from app.models import (
+    Assignment,
+    AssignmentStatus,
+    CycleParticipant,
+    Department,
+    ReviewType,
+    User,
+)
 
 PARTICIPANT_NOT_FOUND = "PARTICIPANT_NOT_FOUND"
 USER_NOT_FOUND = "USER_NOT_FOUND"
 USER_NOT_ACTIVE = "USER_NOT_ACTIVE"
 ALREADY_PARTICIPANT = "ALREADY_PARTICIPANT"
 MANAGER_NOT_PARTICIPANT = "MANAGER_NOT_PARTICIPANT"
+REFRESH_NOT_ALLOWED = "REFRESH_NOT_ALLOWED"
+DISCARD_NOT_CONFIRMED = "DISCARD_NOT_CONFIRMED"
 
 
 @dataclass
@@ -28,6 +37,24 @@ class ParticipantDetail:
     assignments_as_reviewer: list[Row]
     assignments_as_reviewee: list[Row]
 
+
+@dataclass
+class Change:
+    """One value before and after a refresh. Either side can be missing for a manager."""
+
+    old_id: int | None
+    old_name: str | None
+    new_id: int | None
+    new_name: str | None
+
+
+@dataclass
+class RefreshResult:
+    detail: ParticipantDetail
+    department: Change | None
+    manager: Change | None
+    created_ids: list[int]
+    removed_ids: list[int]
 
 def _query(cycle_id: int):
     """One row per participant. Ids are the snapshot values. Names are the current ones."""
@@ -174,3 +201,253 @@ def add_participant(
     )
     db.commit()
     return get_participant(db, cycle_id, user_id, actor_id)
+
+# ---------------------------------------------------------------- refresh
+
+
+def refresh_participant(
+    db: Session,
+    actor_id: int,
+    cycle_id: int,
+    user_id: int,
+    discard_ids: Sequence[int] | None = None,
+) -> RefreshResult:
+    """Copy a person's current department and manager into the cycle (PART-4).
+
+    A new manager means new manager and upward reviews. The old ones are removed, and so
+    are peer reviews that the new manager relationship makes impossible. Reviews that hold
+    work are removed only after the admin has seen them and sent their ids back.
+    """
+    cycle = cycles.lock_cycle(db, cycle_id)
+    cycles.require_open(cycle)
+
+    participant = db.get(
+        CycleParticipant, (cycle_id, user_id), populate_existing=True
+    )
+    if participant is None:
+        raise AppError(404, PARTICIPANT_NOT_FOUND, "Participant not found.")
+
+    user = db.execute(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if not user.is_active:
+        raise AppError(409, USER_NOT_ACTIVE, "This user is not active.")
+    if user.department_id is None:
+        raise AppError(
+            409, snapshot.USER_WITHOUT_DEPARTMENT, "This user has no department."
+        )
+
+    old_department_id = participant.department_id
+    old_manager_id = participant.manager_id
+    new_department_id = user.department_id
+    new_manager_id = user.manager_id
+    department_changed = new_department_id != old_department_id
+    manager_changed = new_manager_id != old_manager_id
+
+    # A manager who did not change was checked when the snapshot was taken. Only a new
+    # manager has to be able to write the reviews.
+    if manager_changed and new_manager_id is not None:
+        if db.get(CycleParticipant, (cycle_id, new_manager_id)) is None:
+            raise AppError(
+                409,
+                MANAGER_NOT_PARTICIPANT,
+                "This user's new manager does not take part in the cycle.",
+            )
+        manager = db.get(User, new_manager_id, populate_existing=True)
+        if manager is None or not manager.is_active:
+            raise AppError(
+                409,
+                snapshot.MANAGER_NOT_ACTIVE,
+                "This user's new manager is not active.",
+            )
+
+    if not department_changed and not manager_changed:
+        return RefreshResult(
+            detail=get_participant(db, cycle_id, user_id, actor_id),
+            department=None,
+            manager=None,
+            created_ids=[],
+            removed_ids=[],
+        )
+
+    to_remove: list[Assignment] = []
+    if manager_changed:
+        # The list below names reviewers. Anyone who is part of the change could learn who
+        # reviews them, so another admin has to do it. This check comes first (P11).
+        involved = {user_id, old_manager_id, new_manager_id} - {None}
+        if actor_id in involved:
+            raise forbidden(
+                REFRESH_NOT_ALLOWED,
+                "You are part of this change. Another admin must refresh this person.",
+            )
+        to_remove = _assignments_to_remove(
+            db, cycle_id, user_id, old_manager_id, new_manager_id
+        )
+        _require_discard_confirmed(db, to_remove, discard_ids)
+
+    removed = [_describe(db, assignment) for assignment in to_remove]
+    for assignment in to_remove:
+        db.delete(assignment)
+    db.flush()
+
+    participant.department_id = new_department_id
+    participant.manager_id = new_manager_id
+
+    created: list[Assignment] = []
+    if manager_changed and new_manager_id is not None:
+        created = [
+            Assignment(
+                cycle_id=cycle_id,
+                reviewer_id=new_manager_id,
+                reviewee_id=user_id,
+                review_type=ReviewType.manager,
+                status=AssignmentStatus.pending,
+            ),
+            Assignment(
+                cycle_id=cycle_id,
+                reviewer_id=user_id,
+                reviewee_id=new_manager_id,
+                review_type=ReviewType.upward,
+                status=AssignmentStatus.pending,
+            ),
+        ]
+        db.add_all(created)
+    db.flush()
+
+    department = (
+        _change(db, Department, old_department_id, new_department_id)
+        if department_changed
+        else None
+    )
+    manager = (
+        _change(db, User, old_manager_id, new_manager_id) if manager_changed else None
+    )
+    created_ids = [assignment.id for assignment in created]
+    removed_ids = [row["assignment_id"] for row in removed]
+
+    _audit(
+        db,
+        actor_id,
+        "refresh_participant",
+        "cycle_participants",
+        user_id,
+        {
+            "cycle_id": cycle_id,
+            "department": [old_department_id, new_department_id],
+            "manager": [old_manager_id, new_manager_id],
+            "created_assignment_ids": created_ids,
+            "removed": removed,
+        },
+    )
+    db.commit()
+    return RefreshResult(
+        detail=get_participant(db, cycle_id, user_id, actor_id),
+        department=department,
+        manager=manager,
+        created_ids=created_ids,
+        removed_ids=removed_ids,
+    )
+
+
+def _assignments_to_remove(
+    db: Session,
+    cycle_id: int,
+    user_id: int,
+    old_manager_id: int | None,
+    new_manager_id: int | None,
+) -> list[Assignment]:
+    """The reviews that stop making sense when the manager changes, locked by id."""
+    pairs: list[tuple[int, int, ReviewType]] = []
+    if old_manager_id is not None:
+        pairs.append((old_manager_id, user_id, ReviewType.manager))
+        pairs.append((user_id, old_manager_id, ReviewType.upward))
+    if new_manager_id is not None:
+        # The new manager cannot be a peer of the person, and the person cannot be a peer
+        # of the new manager (a manager and a direct report are never peers).
+        pairs.append((new_manager_id, user_id, ReviewType.peer))
+        pairs.append((user_id, new_manager_id, ReviewType.peer))
+
+    matches = [
+        and_(
+            Assignment.reviewer_id == reviewer,
+            Assignment.reviewee_id == reviewee,
+            Assignment.review_type == review_type,
+        )
+        for reviewer, reviewee, review_type in pairs
+    ]
+    return list(
+        db.scalars(
+            select(Assignment)
+            .where(Assignment.cycle_id == cycle_id, or_(*matches))
+            .order_by(Assignment.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+def _user_names(db: Session, user_ids: set[int]) -> dict[int, str]:
+    rows = db.execute(select(User.id, User.name).where(User.id.in_(user_ids))).all()
+    return {row.id: row.name for row in rows}
+
+
+def _describe(db: Session, assignment: Assignment) -> dict:
+    names = _user_names(db, {assignment.reviewer_id, assignment.reviewee_id})
+    return {
+        "assignment_id": assignment.id,
+        "review_type": assignment.review_type.value,
+        "status": assignment.status.value,
+        "reviewer": {
+            "id": assignment.reviewer_id,
+            "name": names[assignment.reviewer_id],
+        },
+        "reviewee": {
+            "id": assignment.reviewee_id,
+            "name": names[assignment.reviewee_id],
+        },
+    }
+
+
+def _require_discard_confirmed(
+    db: Session, to_remove: list[Assignment], discard_ids: Sequence[int] | None
+) -> None:
+    """Pending reviews go without asking. Drafts and submitted reviews need the admin's yes.
+
+    The yes is the exact set of their ids. If the data changed since the admin looked, the
+    sets differ, and the admin gets the new list.
+    """
+    at_risk = [a for a in to_remove if a.status != AssignmentStatus.pending]
+    if not at_risk or set(discard_ids or []) == {a.id for a in at_risk}:
+        return
+    raise AppError(
+        409,
+        DISCARD_NOT_CONFIRMED,
+        "Some reviews will be discarded. Confirm to continue.",
+        details=[
+            {
+                "assignmentId": row["assignment_id"],
+                "reviewType": row["review_type"],
+                "status": row["status"],
+                "reviewer": row["reviewer"],
+                "reviewee": row["reviewee"],
+            }
+            for row in (_describe(db, assignment) for assignment in at_risk)
+        ],
+    )
+
+
+def _change(db: Session, model, old_id: int | None, new_id: int | None) -> Change:
+    ids = {i for i in (old_id, new_id) if i is not None}
+    names = {
+        row.id: row.name
+        for row in db.execute(select(model.id, model.name).where(model.id.in_(ids)))
+    }
+    return Change(
+        old_id=old_id,
+        old_name=names.get(old_id),
+        new_id=new_id,
+        new_name=names.get(new_id),
+    )
