@@ -15,6 +15,7 @@ from app.routers import (
     departments,
     my_work,
     participants,
+    peers,
     question_bank,
     templates,
     users,
@@ -60,6 +61,7 @@ def create_app(mailer: Mailer | None = None) -> FastAPI:
     app.include_router(participants.router)
     app.include_router(assignments.router)
     app.include_router(my_work.router)
+    app.include_router(peers.router)
     return app
 
 

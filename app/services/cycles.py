@@ -14,6 +14,7 @@ from app.services import snapshot
 # Error codes. Message text lives next to the line that raises it.
 NOT_FOUND = "CYCLE_NOT_FOUND"
 NO_OPEN_CYCLE = "NO_OPEN_CYCLE"
+NOT_OPEN = "CYCLE_NOT_OPEN"
 NOT_DRAFT = "CYCLE_NOT_DRAFT"
 INVALID_STATUS = "CYCLE_INVALID_STATUS"
 NOT_READY = "CYCLE_NOT_READY"
@@ -226,6 +227,17 @@ def get_open_cycle(db: Session) -> Cycle:
     if cycle is None:
         raise AppError(404, NO_OPEN_CYCLE, "No cycle is open right now.")
     return cycle
+
+
+def lock_cycle(db: Session, cycle_id: int) -> Cycle:
+    """Lock the cycle row for a change made by another service (peers, participants)."""
+    return _lock_cycle(db, cycle_id)
+
+
+def require_open(cycle: Cycle) -> None:
+    # P6 and P10: people and peers change only while the cycle is open.
+    if cycle.status != CycleStatus.open:
+        raise AppError(409, NOT_OPEN, f"The cycle is {cycle.status.value}. This action needs it to be open.")
 
 
 def check_readiness(db: Session, cycle_id: int) -> list[Problem]:
