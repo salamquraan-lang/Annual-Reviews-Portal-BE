@@ -5,7 +5,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from app.models import AssignmentStatus, ReviewType
 from app.schemas.departments import UtcDateTime
-from app.schemas.question_bank import MAX_ID
+from app.schemas.question_bank import MAX_ID, BodyId
 
 # Query strings are text, so ids here are not strict integers.
 QueryId = Annotated[int, Field(ge=1, le=MAX_ID)]
@@ -51,6 +51,17 @@ class AssignmentListQuery(BaseModel):
     department_id: QueryId | None = Field(default=None, alias="departmentId")
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100, alias="pageSize")
+
+
+# ------------------------------------------------------------------ body
+
+
+class ParticipantAdd(BaseModel):
+    """The user to add to the open cycle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: BodyId = Field(alias="userId")
 
 
 # ----------------------------------------------------------- shared types

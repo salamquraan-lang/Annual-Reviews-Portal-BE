@@ -1,16 +1,19 @@
-# app/services/participants.py
-"""Reads of the people in a cycle: the list and one person's page."""
+"""The people of a cycle: the list, one person's page, and adding a person."""
 
 from dataclasses import dataclass
 
 from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session, aliased
 
-from app.errors import AppError
+from app.errors import AppError, bad_request
 from app.models import CycleParticipant, Department, User
-from app.services import assignments, cycles
+from app.services import assignments, cycles, snapshot
 
 PARTICIPANT_NOT_FOUND = "PARTICIPANT_NOT_FOUND"
+USER_NOT_FOUND = "USER_NOT_FOUND"
+USER_NOT_ACTIVE = "USER_NOT_ACTIVE"
+ALREADY_PARTICIPANT = "ALREADY_PARTICIPANT"
+MANAGER_NOT_PARTICIPANT = "MANAGER_NOT_PARTICIPANT"
 
 
 @dataclass
@@ -95,3 +98,79 @@ def get_participant(
         assignments_as_reviewer=written,
         assignments_as_reviewee=received,
     )
+
+
+def _audit(
+    db: Session,
+    actor_id: int,
+    action: str,
+    table: str,
+    record_id: int,
+    details: dict | None = None,
+) -> None:
+    # TODO(P12): write the audit_log row here, inside the caller's transaction (before
+    # commit). The audit log is cluster 11. Same stub as in services/peers.py.
+    return None
+
+
+def add_participant(
+    db: Session, actor_id: int, cycle_id: int, user_id: int
+) -> ParticipantDetail:
+    """A person who joined after the cycle opened takes part from now on (PART-5).
+
+    The snapshot row comes from the user's current department and manager. Nobody else's
+    snapshot changes. The checks run in the order of the design, and the first failure wins.
+    """
+    cycle = cycles.lock_cycle(db, cycle_id)
+    cycles.require_open(cycle)
+
+    user = db.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if user is None:
+        raise bad_request(USER_NOT_FOUND, "No user has this id.")
+    if not user.is_active:
+        raise AppError(409, USER_NOT_ACTIVE, "This user is not active.")
+    if db.get(CycleParticipant, (cycle_id, user_id)) is not None:
+        raise AppError(
+            409, ALREADY_PARTICIPANT, "This user already takes part in the cycle."
+        )
+    if user.department_id is None:
+        raise AppError(
+            409, snapshot.USER_WITHOUT_DEPARTMENT, "This user has no department."
+        )
+    if user.manager_id is not None:
+        if db.get(CycleParticipant, (cycle_id, user.manager_id)) is None:
+            raise AppError(
+                409,
+                MANAGER_NOT_PARTICIPANT,
+                "This user's manager does not take part in the cycle.",
+            )
+        manager = db.get(User, user.manager_id, populate_existing=True)
+        if manager is None or not manager.is_active:
+            raise AppError(
+                409, snapshot.MANAGER_NOT_ACTIVE, "This user's manager is not active."
+            )
+
+    snapshot.take_snapshot(db, cycle, [user_id])
+
+    # A self review, and a manager and an upward review when there is a manager.
+    created = 1 if user.manager_id is None else 3
+    _audit(
+        db,
+        actor_id,
+        "add_participant",
+        "cycle_participants",
+        user_id,
+        {
+            "cycle_id": cycle_id,
+            "department_id": user.department_id,
+            "manager_id": user.manager_id,
+            "assignments": created,
+        },
+    )
+    db.commit()
+    return get_participant(db, cycle_id, user_id, actor_id)
